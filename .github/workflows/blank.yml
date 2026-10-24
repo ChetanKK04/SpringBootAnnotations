@@ -1,36 +1,114 @@
-# This is a basic workflow to help you get started with Actions
+name: App
+run-name: Build ${{ github.repository }}-${{ github.run_number }}
 
-name: CI
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "master" branch
   push:
-    branches: [ "master" ]
-  pull_request:
-    branches: [ "master" ]
+    branches:
+      - main
+      - master
 
-  # Allows you to run this workflow manually from the Actions tab
+  pull_request:
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+env:
+  JAVA_VERSION: "17"
+
 jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
+  build-test-package:
     runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+      # Step 1: Checkout Code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
+      # Step 2: Setup Java
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Grant Execute Permission
+        run: chmod +x mvnw
+
+      # Read artifactId and version from pom.xml
+      - name: Extract Maven Project Info
         run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+          echo "ARTIFACT_ID=$(./mvnw help:evaluate -Dexpression=project.artifactId -q -DforceStdout)" >> $GITHUB_ENV
+          echo "VERSION=$(./mvnw help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_ENV
+
+      # Step 3: Run Unit Tests
+      - name: Execute Tests
+        run: ./mvnw clean test
+
+      # Step 4: SonarQube Analysis
+      - name: SonarQube Scan
+        run: |
+          ./mvnw sonar:sonar \
+            -Dsonar.projectKey=${{ env.ARTIFACT_ID }}
+        env:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      # Step 5: Build Package
+      - name: Build Application
+        run: ./mvnw package -DskipTests
+
+      # Step 6: Archive JAR
+      - name: Archive JAR
+        run: |
+          mkdir -p artifacts
+          cp target/*.jar artifacts/
+
+      # Step 7A: Upload Artifact to GitHub
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_ID }}-${{ env.VERSION }}
+          path: artifacts/*.jar
+
+      # Step 7B: Publish To Nexus (Optional)
+
+      # - name: Publish to Nexus
+      #   run: ./mvnw deploy
+      #   env:
+      #     MAVEN_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+      #     MAVEN_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+
+      # Step 8: Build Docker Image
+      - name: Build Docker Image
+        run: |
+          docker build \
+            -t ${{ env.ARTIFACT_ID }}:${{ env.VERSION }} \
+            -t ${{ env.ARTIFACT_ID }}:latest .
+
+      # Step 9A: Docker Login (Optional)
+
+      # - name: Docker Hub Login
+      #   uses: docker/login-action@v3
+      #   with:
+      #     username: ${{ secrets.DOCKER_USERNAME }}
+      #     password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # Step 9B: Push Docker Image (Optional)
+
+      # - name: Push Docker Image
+      #   run: |
+      #     docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.ARTIFACT_ID }}:${{ env.VERSION }}
+      #     docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.ARTIFACT_ID }}:latest
+
+      # Step 10: Notification
+      - name: Success Notification
+        if: success()
+        run: echo "Build Successful"
+
+      - name: Failure Notification
+        if: failure()
+        run: echo "Build Failed"
